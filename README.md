@@ -304,10 +304,65 @@ toolset add gh owner/repository@v2.5.0
 - Only works with projects that publish release binaries
 - Requires consistent release naming conventions
 
+### Docker Runtime (`docker`)
+
+Runs a tool from a container image. Requires the `docker` CLI on `PATH` and a running daemon.
+The module is `<image>@<tag>`, and an **alias is required** — it is the name you use with `toolset run`.
+
+```shell
+# Flags must come before the positional arguments.
+toolset add --entrypoint /bin/hadolint docker ghcr.io/hadolint/hadolint@v2.12.0 hadolint
+toolset sync
+toolset run hadolint Dockerfile
+```
+
+Container settings live next to the tool in `.toolset.json` (all optional):
+
+```json
+{
+  "runtime": "docker",
+  "module": "ghcr.io/hadolint/hadolint@v2.12.0",
+  "alias": "hadolint",
+  "docker": {
+    "entrypoint": "/bin/hadolint",
+    "args": ["--no-color"],
+    "volumes": ["$PROJECT:/work", "$HOME/.cache/hadolint:/cache"],
+    "workdir": "/work",
+    "network": "none",
+    "env": ["CI"]
+  }
+}
+```
+
+| Setting      | Flag           | Default                                                              |
+|--------------|----------------|----------------------------------------------------------------------|
+| `entrypoint` | `--entrypoint` | the image's own                                                      |
+| `args`       | `--arg`        | none; placed before your arguments                                   |
+| `volumes`    | `--volume`     | `$PROJECT:/work`; `$PROJECT`, `$PWD`, `$HOME` are expanded at run time |
+| `workdir`    | `--workdir`    | `/work` plus your current subdirectory                               |
+| `network`    | `--network`    | `none`; also `bridge`, `host` or a network name                      |
+| `env`        | `--env`        | none; names of host variables to pass through (no values are stored) |
+
+Every run uses `--rm -i`, `-t` only on a terminal, `--user <uid>:<gid>`, `--cap-drop ALL` and
+`--security-opt no-new-privileges`.
+
+**Safety checks** run on every `add` and every `run`:
+
+- host volume sources are resolved (symlinks included) and must be under the project or `$HOME`;
+  `/` and `docker.sock` are always refused, and a missing source is an error
+- tools that come from a remote/included spec cannot use `network: host` and can only mount
+  paths under the project
+
+**Pinning:** `--pin` stores the image manifest digest. Pinned tools are pulled and run by digest.
+
+**Limitations:** `toolset upgrade` does not find newer tags (the docker CLI cannot list them) — use
+`toolset ensure` with the new tag. There is no binary on disk, so `which` prints `docker:<module>`.
+
 **When to use which:**
 
 - Use `gh` for tools that provide pre-built binaries (faster)
 - Use `go` for tools without releases or when you need specific Go versions
+- Use `docker` for tools that are only shipped as images or need a full OS environment
 
 ## Contributing
 
