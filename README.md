@@ -343,15 +343,25 @@ Container settings live next to the tool in `.toolset.json` (all optional):
 | `network`    | `--network`    | `none`; also `bridge`, `host` or a network name                      |
 | `env`        | `--env`        | none; names of host variables to pass through (no values are stored) |
 
-Every run uses `--rm -i`, `-t` only on a terminal, `--user <uid>:<gid>`, `--cap-drop ALL` and
-`--security-opt no-new-privileges`.
+Every run uses `--rm -i`, `-t` only when both stdin and stdout are terminals, `--user <uid>:<gid>`,
+`--cap-drop ALL` and `--security-opt no-new-privileges`.
 
-**Safety checks** run on every `add` and every `run`:
+**Safety checks.** Volumes, network and env names are validated when you `add`/`ensure` a tool
+(bad settings are rejected before they reach the spec) and again, together with the filesystem
+checks, on every `run`:
 
 - host volume sources are resolved (symlinks included) and must be under the project or `$HOME`;
   `/` and `docker.sock` are always refused, and a missing source is an error
-- tools that come from a remote/included spec cannot use `network: host` and can only mount
-  paths under the project
+
+Tools from a remote or included spec are **untrusted**: their author is not the person running
+them. A tool is trusted only when the same definition (alias, docker settings and pin) is in your
+local `.toolset.json`. Untrusted tools get a stricter profile:
+
+- network is `none` only
+- no host environment variables are passed through (`env` is rejected)
+- no named volumes; host mounts are read-only (`:rw` is rejected) and only under the project
+
+`ensure` keeps the alias, tags and docker settings of an existing tool unless you pass new ones.
 
 **Pinning:** `--pin` stores the image manifest digest. Pinned tools are pulled and run by digest.
 
