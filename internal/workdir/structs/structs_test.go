@@ -1,6 +1,7 @@
 package structs_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/kazhuravlev/optional"
@@ -167,4 +168,42 @@ func Tool(runtime, module string, alias optional.Val[string], tags []string) str
 		Alias:   alias,
 		Tags:    tags,
 	}
+}
+
+func TestTool_DockerConfig_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tool := structs.Tool{
+		Runtime: "docker",
+		Module:  "ghcr.io/hadolint/hadolint:v2.12.0",
+		Alias:   optional.New("hadolint"),
+		Docker: optional.New(structs.DockerConfig{
+			Entrypoint: "/bin/hadolint",
+			Args:       []string{"--no-color"},
+			Volumes:    []string{"$PROJECT:/work"},
+			Network:    "none",
+			Env:        []string{"CI"},
+		}),
+		Pin: optional.New(structs.Pin{ImageDigest: "sha256:abc"}),
+	}
+
+	bb, err := json.Marshal(tool)
+	require.NoError(t, err)
+
+	var got structs.Tool
+	require.NoError(t, json.Unmarshal(bb, &got))
+	require.Equal(t, tool, got)
+}
+
+func TestTool_NoDockerConfig_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tool := structs.Tool{Runtime: "gh", Module: "a/b@v1"}
+
+	bb, err := json.Marshal(tool)
+	require.NoError(t, err)
+
+	var got structs.Tool
+	require.NoError(t, json.Unmarshal(bb, &got))
+	require.False(t, got.Docker.HasVal())
 }

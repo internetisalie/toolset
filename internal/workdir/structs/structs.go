@@ -27,9 +27,28 @@ type PinnedAsset struct {
 // Exactly one field is populated per runtime:
 //   - go-runtime  → CommitHash (from proxy.golang.org Origin.Hash)
 //   - gh-runtime  → Assets (per-platform SHA256 archive digests)
+//   - docker      → ImageDigest (image manifest digest, "sha256:<hex64>")
 type Pin struct {
-	CommitHash string        `json:"commit_hash,omitempty"`
-	Assets     []PinnedAsset `json:"assets,omitempty"`
+	CommitHash  string        `json:"commit_hash,omitempty"`
+	Assets      []PinnedAsset `json:"assets,omitempty"`
+	ImageDigest string        `json:"image_digest,omitempty"`
+}
+
+// DockerConfig describes how a docker-runtime tool is executed.
+// All fields are optional; see runtime-docker for defaults.
+type DockerConfig struct {
+	// Entrypoint overrides the image ENTRYPOINT.
+	Entrypoint string `json:"entrypoint,omitempty"`
+	// Args are placed before the user's arguments.
+	Args []string `json:"args,omitempty"`
+	// Volumes in `docker run -v` syntax. $PROJECT, $PWD and $HOME are expanded at run time.
+	Volumes []string `json:"volumes,omitempty"`
+	// Workdir inside the container.
+	Workdir string `json:"workdir,omitempty"`
+	// Network is one of none (default), bridge, host or a named network.
+	Network string `json:"network,omitempty"`
+	// Env lists host environment variable names passed through to the container.
+	Env []string `json:"env,omitempty"`
 }
 
 type RunError struct {
@@ -48,6 +67,8 @@ type Tool struct {
 	Tags  []string             `json:"tags"`
 	// Pin holds supply-chain verification data. Empty for unpinned tools.
 	Pin optional.Val[Pin] `json:"pin"`
+	// Docker holds execution settings. Used by the docker runtime only.
+	Docker optional.Val[DockerConfig] `json:"docker"`
 }
 
 func (t Tool) ID() string {
