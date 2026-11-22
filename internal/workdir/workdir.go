@@ -2,6 +2,7 @@ package workdir
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -199,6 +200,11 @@ func (c *Workdir) Add(ctx context.Context, runtime, program string, alias option
 		Docker:  docker,
 	}
 
+	// Upserting (add --pin, ensure) must not silently drop what the user configured earlier.
+	if pin {
+		tool = inheritDockerSettings(c.spec.Tools, tool)
+	}
+
 	if err := validateTool(tool); err != nil {
 		return false, "", err
 	}
@@ -241,6 +247,9 @@ func (c *Workdir) Ensure(ctx context.Context, runtime, program string, alias opt
 		Tags:    tags,
 		Docker:  docker,
 	}
+
+	// Ensure replaces the entry; keep alias, tags and docker settings that were not given again.
+	tool = inheritDockerSettings(c.spec.Tools, tool)
 
 	if err := validateTool(tool); err != nil {
 		return "", err
@@ -373,7 +382,7 @@ func (c *Workdir) runWithRuntime(ctx context.Context, rt runtimes.IRuntime, tool
 	opts := runtimedocker.RunOptions{
 		ProjectRoot: c.locations.ProjectRootDir,
 		// Tools that are not in the local spec come from remotes/includes and are sandboxed harder.
-		Untrusted: !slices.ContainsFunc(c.spec.Tools, func(t structs.Tool) bool { return t.ID() == tool.ID() }),
+		Untrusted: !isLocalTool(c.spec.Tools, tool),
 	}
 
 	return tr.RunTool(ctx, tool, opts, args...)
@@ -391,7 +400,67 @@ func validateTool(tool structs.Tool) error {
 		return errors.New("docker tools require an alias: it is the name used by `toolset run`")
 	}
 
+	if isDocker {
+		// Local tools are trusted; the stricter remote profile is applied at run time by provenance.
+		if err := runtimedocker.ValidateConfig(tool.Docker.ValDefault(structs.DockerConfig{}), false); err != nil {
+			return fmt.Errorf("invalid docker settings: %w", err)
+		}
+	}
+
 	return nil
+}
+
+// isLocalTool reports whether the tool (taken from the lock) is defined by the local spec.
+// The comparison covers everything that decides how the tool runs, not only its ID: a remote
+// entry that merely shares an ID with a local one must not inherit the local entry's trust.
+func isLocalTool(specTools structs.Tools, tool structs.Tool) bool {
+	return slices.ContainsFunc(specTools, func(t structs.Tool) bool {
+		return t.ID() == tool.ID() && runDefinition(t) == runDefinition(tool)
+	})
+}
+
+// runDefinition serializes the parts of a tool that influence how it is run.
+func runDefinition(t structs.Tool) string {
+	bb, err := json.Marshal(struct {
+		Alias  optional.Val[string]
+		Docker optional.Val[structs.DockerConfig]
+		Pin    optional.Val[structs.Pin]
+	}{t.Alias, t.Docker, t.Pin})
+	if err != nil {
+		// Unreachable for these types; an unmatched definition is the safe result.
+		return "error:" + err.Error()
+	}
+
+	return string(bb)
+}
+
+// inheritDockerSettings fills alias, tags and docker settings of a docker tool from the existing
+// entry for the same tool when they were not provided.
+func inheritDockerSettings(existing structs.Tools, tool structs.Tool) structs.Tool {
+	if tool.RuntimeName() != "docker" {
+		return tool
+	}
+
+	i := slices.IndexFunc(existing, tool.IsSame)
+	if i < 0 {
+		return tool
+	}
+
+	old := existing[i]
+
+	if !tool.Alias.HasVal() {
+		tool.Alias = old.Alias
+	}
+
+	if !tool.Docker.HasVal() {
+		tool.Docker = old.Docker
+	}
+
+	if len(tool.Tags) == 0 {
+		tool.Tags = old.Tags
+	}
+
+	return tool
 }
 
 // Sync will read the locked tools and try to install the desired version. It will skip the installation in

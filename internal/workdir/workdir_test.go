@@ -125,6 +125,13 @@ func Test_New_success(t *testing.T) {
 	runtimes := wd.RuntimeList()
 	require.Contains(t, runtimes, "go")
 	require.Contains(t, runtimes, "gh")
+
+	want := 2
+	if _, err := exec.LookPath("docker"); err == nil {
+		require.Contains(t, runtimes, "docker")
+		want = 3
+	}
+	require.Len(t, runtimes, want)
 }
 
 func Test_New_missingSpec(t *testing.T) {
@@ -224,4 +231,11 @@ func Test_New_multipleRuntimes(t *testing.T) {
 	runtimes := wd.RuntimeList()
 	require.Contains(t, runtimes, "go")
 	require.Contains(t, runtimes, "gh")
+
+	want := 2
+	if _, err := exec.LookPath("docker"); err == nil {
+		require.Contains(t, runtimes, "docker")
+		want = 3
+	}
+	require.Len(t, runtimes, want)
 }
