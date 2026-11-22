@@ -30,9 +30,8 @@ type hostEnv struct {
 	Cwd       string // $PWD
 	Home      string // $HOME
 	UID, GID  int    // -1 disables --user
-	TTY       bool   // stdin is a terminal
+	TTY       bool   // stdin and stdout are terminals
 	Untrusted bool   // tool comes from a remote spec
-	Getenv    func(string) string
 }
 
 func currentHostEnv() hostEnv {
@@ -40,18 +39,52 @@ func currentHostEnv() hostEnv {
 	home, _ := os.UserHomeDir()
 
 	return hostEnv{
-		Cwd:    cwd,
-		Home:   home,
-		UID:    os.Getuid(),
-		GID:    os.Getgid(),
-		TTY:    term.IsTerminal(int(os.Stdin.Fd())), // not ModeCharDevice: /dev/null is one
-		Getenv: os.Getenv,
+		Cwd:  cwd,
+		Home: home,
+		UID:  os.Getuid(),
+		GID:  os.Getgid(),
+		// -t merges stderr into stdout and rewrites line endings, so it is only safe when both ends are
+		// terminals. Not os.ModeCharDevice: /dev/null is one.
+		TTY: term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())),
 	}
+}
+
+// ValidateConfig performs the checks that need neither the filesystem nor run-time variables.
+// It is called when a tool is added, and again (together with path checks) before every run.
+//
+// Untrusted tools (not in the local spec) are held to a stricter profile, because their author
+// is not the person running them: no network, no host env variables, no named volumes and
+// read-only host mounts.
+func ValidateConfig(cfg structs.DockerConfig, untrusted bool) error {
+	if _, err := validateNetwork(cfg.Network, untrusted); err != nil {
+		return err
+	}
+
+	if err := validateEnv(cfg.Env, untrusted); err != nil {
+		return err
+	}
+
+	for _, spec := range cfg.Volumes {
+		m, err := parseVolume(spec)
+		if err != nil {
+			return fmt.Errorf("volume %q: %w", spec, err)
+		}
+
+		if err := checkUntrustedMount(m, untrusted); err != nil {
+			return fmt.Errorf("volume %q: %w", spec, err)
+		}
+	}
+
+	return nil
 }
 
 // buildRunArgs returns the arguments of `docker run` (without the leading "docker").
 // It validates the config; any violation is returned as an error and nothing must be run.
 func buildRunArgs(cfg structs.DockerConfig, imgRef string, env hostEnv, userArgs []string) ([]string, error) {
+	if err := ValidateConfig(cfg, env.Untrusted); err != nil {
+		return nil, err
+	}
+
 	project, err := filepath.EvalSymlinks(env.Project)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project root (%s): %w", env.Project, err)
@@ -68,11 +101,7 @@ func buildRunArgs(cfg structs.DockerConfig, imgRef string, env hostEnv, userArgs
 
 	args = append(args, "--cap-drop", "ALL", "--security-opt", "no-new-privileges")
 
-	network, err := validateNetwork(cfg.Network, env.Untrusted)
-	if err != nil {
-		return nil, err
-	}
-
+	network, _ := validateNetwork(cfg.Network, env.Untrusted) // validated above
 	args = append(args, "--network", network)
 
 	volumes := cfg.Volumes
@@ -102,10 +131,6 @@ func buildRunArgs(cfg structs.DockerConfig, imgRef string, env hostEnv, userArgs
 	}
 
 	for _, name := range cfg.Env {
-		if !envNameRe.MatchString(name) {
-			return nil, fmt.Errorf("invalid env name: %q", name)
-		}
-
 		// "-e NAME" (without a value) passes the variable only when it is set on the host.
 		args = append(args, "-e", name)
 	}
@@ -130,11 +155,26 @@ func validateNetwork(network string, untrusted bool) (string, error) {
 		return "", fmt.Errorf("invalid network: %q", network)
 	}
 
-	if network == "host" && untrusted {
-		return "", errors.New("network 'host' is not allowed for tools from remote specs")
+	// Any network other than none reaches the LAN, the docker host or other containers.
+	if untrusted && network != defaultNetwork {
+		return "", fmt.Errorf("network %q is not allowed for tools from remote specs (only %q)", network, defaultNetwork)
 	}
 
 	return network, nil
+}
+
+func validateEnv(names []string, untrusted bool) error {
+	if untrusted && len(names) > 0 {
+		return errors.New("passing host env variables is not allowed for tools from remote specs")
+	}
+
+	for _, name := range names {
+		if !envNameRe.MatchString(name) {
+			return fmt.Errorf("invalid env name: %q", name)
+		}
+	}
+
+	return nil
 }
 
 type mount struct {
@@ -151,6 +191,55 @@ func (m mount) String() string {
 	return s
 }
 
+// parseVolume splits src:dst[:opts] without expanding variables or touching the filesystem.
+func parseVolume(spec string) (mount, error) {
+	parts := strings.Split(spec, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return mount{}, errors.New("expected src:dst[:ro|rw]")
+	}
+
+	m := mount{src: parts[0], dst: parts[1]}
+	if len(parts) == 3 {
+		m.opts = parts[2]
+		if m.opts != "ro" && m.opts != "rw" {
+			return mount{}, fmt.Errorf("unsupported option %q (allowed: ro, rw)", m.opts)
+		}
+	}
+
+	if !path.IsAbs(m.dst) {
+		return mount{}, errors.New("container path must be absolute")
+	}
+
+	// A source that is (or expands to) an absolute path is a host path; anything else is a named volume.
+	if !strings.HasPrefix(m.src, "/") && !strings.HasPrefix(m.src, "$") {
+		if !netNameRe.MatchString(m.src) {
+			return mount{}, fmt.Errorf("invalid volume source %q", m.src)
+		}
+
+		m.named = true
+	}
+
+	return m, nil
+}
+
+// checkUntrustedMount applies the extra rules for tools from remote specs.
+func checkUntrustedMount(m mount, untrusted bool) error {
+	if !untrusted {
+		return nil
+	}
+
+	if m.named {
+		// A named volume can be shared with other projects (or be bound to a host path by its driver).
+		return errors.New("named volumes are not allowed for tools from remote specs")
+	}
+
+	if m.opts == "rw" {
+		return errors.New("read-write mounts are not allowed for tools from remote specs")
+	}
+
+	return nil
+}
+
 func expandVars(s string, env hostEnv) string {
 	return strings.NewReplacer(
 		"${PROJECT}", env.Project, "$PROJECT", env.Project,
@@ -161,34 +250,28 @@ func expandVars(s string, env hostEnv) string {
 
 // resolveVolume expands variables and checks that a host path is allowed to be mounted.
 func resolveVolume(spec string, env hostEnv, project string) (mount, error) {
-	parts := strings.Split(spec, ":")
-	if len(parts) < 2 || len(parts) > 3 {
-		return mount{}, errors.New("expected src:dst[:opts]")
+	m, err := parseVolume(spec)
+	if err != nil {
+		return mount{}, err
 	}
 
-	m := mount{src: expandVars(parts[0], env), dst: parts[1]}
-	if len(parts) == 3 {
-		m.opts = parts[2]
-		for _, o := range strings.Split(m.opts, ",") {
-			if o != "ro" && o != "rw" {
-				return mount{}, fmt.Errorf("unsupported option %q (allowed: ro, rw)", o)
-			}
-		}
+	if err := checkUntrustedMount(m, env.Untrusted); err != nil {
+		return mount{}, err
 	}
 
-	if !path.IsAbs(m.dst) {
-		return mount{}, errors.New("container path must be absolute")
-	}
-
-	if !strings.HasPrefix(m.src, "/") {
-		// Named volume: it never touches the host filesystem.
-		if !netNameRe.MatchString(m.src) {
-			return mount{}, fmt.Errorf("invalid volume source %q", m.src)
-		}
-
-		m.named = true
-
+	if m.named {
 		return m, nil
+	}
+
+	m.src = expandVars(m.src, env)
+	if !strings.HasPrefix(m.src, "/") {
+		return mount{}, fmt.Errorf("source %q does not expand to an absolute path", m.src)
+	}
+
+	if env.Untrusted {
+		// The project mount is writable by default, which would let a remote tool rewrite
+		// .toolset.json, the lock file or .git/hooks.
+		m.opts = "ro"
 	}
 
 	resolved, err := filepath.EvalSymlinks(m.src)

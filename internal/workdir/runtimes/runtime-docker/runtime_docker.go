@@ -96,7 +96,8 @@ func parseImage(str string) (image, error) {
 		return image{}, errors.New("digest references are not accepted here: use a tag and --pin")
 	}
 
-	if name == "" || tag == "" || strings.ContainsAny(name+tag, " \t\n@") {
+	// A leading '-' would be read by docker as a flag, not as an image.
+	if name == "" || tag == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name+tag, " \t\n@") {
 		return image{}, fmt.Errorf("invalid image reference: %q", str)
 	}
 
@@ -192,13 +193,15 @@ func (r *Runtime) Install(ctx context.Context, program string, pin optional.Val[
 }
 
 // Run runs the image with default settings in the current directory.
+// Callers that know where the tool came from should use RunTool; here nothing is known about it,
+// so it gets the stricter (untrusted) profile.
 func (r *Runtime) Run(ctx context.Context, program string, args ...string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get cwd: %w", err)
 	}
 
-	return r.RunTool(ctx, structs.Tool{Runtime: runtimeName, Module: program}, RunOptions{ProjectRoot: cwd}, args...)
+	return r.RunTool(ctx, structs.Tool{Runtime: runtimeName, Module: program}, RunOptions{ProjectRoot: cwd, Untrusted: true}, args...)
 }
 
 // RunTool runs the tool using its docker settings.

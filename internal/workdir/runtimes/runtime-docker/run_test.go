@@ -27,7 +27,6 @@ func testEnv(t *testing.T) (hostEnv, string) {
 		Home:    filepath.Join(root, "home"),
 		UID:     1000,
 		GID:     1001,
-		Getenv:  func(string) string { return "" },
 	}, root
 }
 
@@ -103,8 +102,6 @@ func TestBuildRunArgs_Rejects(t *testing.T) {
 		cfg       structs.DockerConfig
 		untrusted bool
 	}{
-		{name: "root mount", cfg: structs.DockerConfig{Volumes: []string{"/:/host"}}},
-		{name: "docker socket", cfg: structs.DockerConfig{Volumes: []string{"/var/run/docker.sock:/s"}}},
 		{name: "outside project and home", cfg: structs.DockerConfig{Volumes: []string{root + "/outside:/o"}}},
 		{name: "symlink escape", cfg: structs.DockerConfig{Volumes: []string{"$PROJECT/escape:/o"}}},
 		{name: "missing source", cfg: structs.DockerConfig{Volumes: []string{"$PROJECT/nope:/o"}}},
@@ -115,6 +112,13 @@ func TestBuildRunArgs_Rejects(t *testing.T) {
 		{name: "host network untrusted", cfg: structs.DockerConfig{Network: "host"}, untrusted: true},
 		{name: "home mount untrusted", cfg: structs.DockerConfig{Volumes: []string{"$HOME/cache:/c"}}, untrusted: true},
 		{name: "bad env name", cfg: structs.DockerConfig{Env: []string{"A=b"}}},
+		{name: "unexpanded non-absolute source", cfg: structs.DockerConfig{Volumes: []string{"$NOPE/x:/o"}}},
+		{name: "bridge network untrusted", cfg: structs.DockerConfig{Network: "bridge"}, untrusted: true},
+		{name: "named network untrusted", cfg: structs.DockerConfig{Network: "myapp_default"}, untrusted: true},
+		{name: "env untrusted", cfg: structs.DockerConfig{Env: []string{"GITHUB_TOKEN"}}, untrusted: true},
+		{name: "named volume untrusted", cfg: structs.DockerConfig{Volumes: []string{"shared-db:/d"}}, untrusted: true},
+		{name: "rw mount untrusted", cfg: structs.DockerConfig{Volumes: []string{"$PROJECT:/w:rw"}}, untrusted: true},
+		{name: "combined options", cfg: structs.DockerConfig{Volumes: []string{"$PROJECT:/w:ro,rw"}}},
 	}
 
 	for _, tt := range tests {
@@ -138,4 +142,88 @@ func TestBuildRunArgs_HostNetworkTrusted(t *testing.T) {
 	got, err := buildRunArgs(structs.DockerConfig{Network: "host"}, "img:1", env, nil)
 	require.NoError(t, err)
 	require.Contains(t, got, "host")
+}
+
+// The next two tests mount paths that ARE inside the allowed directories, so the only thing that can
+// reject them is the dedicated check. (A path outside project/home is rejected by the directory check
+// anyway, which would make these pass for the wrong reason.)
+
+func TestBuildRunArgs_RejectsDockerSocketInsideProject(t *testing.T) {
+	t.Parallel()
+
+	env, _ := testEnv(t)
+	require.NoError(t, os.WriteFile(filepath.Join(env.Project, "docker.sock"), nil, 0o600))
+
+	_, err := buildRunArgs(structs.DockerConfig{Volumes: []string{"$PROJECT/docker.sock:/s"}}, "img:1", env, nil)
+	require.ErrorContains(t, err, "not allowed")
+}
+
+func TestBuildRunArgs_RejectsRootWhenHomeIsRoot(t *testing.T) {
+	t.Parallel()
+
+	env, _ := testEnv(t)
+	env.Home = "/"
+
+	_, err := buildRunArgs(structs.DockerConfig{Volumes: []string{"/:/host"}}, "img:1", env, nil)
+	require.ErrorContains(t, err, "not allowed")
+}
+
+func TestBuildRunArgs_UntrustedProfile(t *testing.T) {
+	t.Parallel()
+
+	env, _ := testEnv(t)
+	env.Untrusted = true
+
+	got, err := buildRunArgs(structs.DockerConfig{}, "img:1", env, nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"run", "--rm", "-i",
+		"--user", "1000:1001",
+		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+		"--network", "none",
+		"-v", env.Project + ":/work:ro",
+		"-w", "/work",
+		"img:1",
+	}, got)
+
+	// An explicit read-only mount is fine too.
+	got, err = buildRunArgs(structs.DockerConfig{Volumes: []string{"$PROJECT:/src:ro"}, Network: "none"}, "img:1", env, nil)
+	require.NoError(t, err)
+	require.Contains(t, got, env.Project+":/src:ro")
+}
+
+func TestValidateConfig(t *testing.T) {
+	t.Parallel()
+
+	// Static checks only: nothing here touches the filesystem, so it can run when a tool is added.
+	require.NoError(t, ValidateConfig(structs.DockerConfig{}, false))
+	require.NoError(t, ValidateConfig(structs.DockerConfig{
+		Volumes: []string{"$PROJECT:/work", "$HOME/c:/c:ro", "cache:/n"},
+		Network: "bridge",
+		Env:     []string{"CI"},
+	}, false))
+
+	for name, cfg := range map[string]structs.DockerConfig{
+		"missing dst":    {Volumes: []string{"justone"}},
+		"relative dst":   {Volumes: []string{"$PROJECT:work"}},
+		"bad option":     {Volumes: []string{"$PROJECT:/w:suid"}},
+		"bad network":    {Network: "container:x"},
+		"bad env":        {Env: []string{"A=B"}},
+		"bad named vol":  {Volumes: []string{"-x:/w"}},
+		"empty src name": {Volumes: []string{":/w"}},
+	} {
+		require.Error(t, ValidateConfig(cfg, false), name)
+	}
+
+	require.NoError(t, ValidateConfig(structs.DockerConfig{Volumes: []string{"$PROJECT:/work:ro"}, Network: "none"}, true))
+
+	for name, cfg := range map[string]structs.DockerConfig{
+		"bridge":       {Network: "bridge"},
+		"host":         {Network: "host"},
+		"env":          {Env: []string{"HOME"}},
+		"named volume": {Volumes: []string{"cache:/c"}},
+		"rw":           {Volumes: []string{"$PROJECT:/w:rw"}},
+	} {
+		require.Error(t, ValidateConfig(cfg, true), name)
+	}
 }

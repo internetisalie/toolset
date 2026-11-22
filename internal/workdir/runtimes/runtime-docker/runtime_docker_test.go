@@ -76,6 +76,8 @@ func TestParseImage(t *testing.T) {
 		{in: "a/b:1@2", wantErr: true},
 		{in: "a b@1", wantErr: true},
 		{in: "a/b@", wantErr: true},
+		{in: "--volume=/:/host@ro", wantErr: true},
+		{in: "-x", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -139,6 +141,12 @@ func TestRuntime_GetPin(t *testing.T) {
 	pin, err := newTest(f, hostEnv{}).GetPin(context.Background(), "a/b@v1")
 	require.NoError(t, err)
 	require.Equal(t, digest, pin.Val().ImageDigest)
+
+	// Only indented (per-platform) Digest lines, no top-level one: must not be accepted.
+	nested := "Name: x\nManifests:\n  Name: y\n  Digest:      " + other + "\n"
+	f = &fakeCmd{outputs: map[string]string{"buildx imagetools inspect": nested}}
+	_, err = newTest(f, hostEnv{}).GetPin(context.Background(), "a/b@v1")
+	require.Error(t, err)
 
 	f = &fakeCmd{outputs: map[string]string{"buildx imagetools inspect": "garbage"}}
 	_, err = newTest(f, hostEnv{}).GetPin(context.Background(), "a/b@v1")
