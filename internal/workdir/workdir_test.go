@@ -3,6 +3,7 @@ package workdir_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"runtime"
 	"testing"
 
@@ -43,7 +44,11 @@ func TestInit(t *testing.T) {
 	require.NotEmpty(t, wd)
 
 	require.NoError(t, wd.Save(ctx))
-	require.Equal(t, []string{"gh", "go"}, wd.RuntimeList())
+	want := []string{"gh", "go"}
+	if _, err := exec.LookPath("docker"); err == nil {
+		want = []string{"docker", "gh", "go"}
+	}
+	require.Equal(t, want, wd.RuntimeList())
 
 	tools, err := wd.GetTools(ctx)
 	require.NoError(t, err)
@@ -217,7 +222,6 @@ func Test_New_multipleRuntimes(t *testing.T) {
 	require.NoError(t, err)
 
 	runtimes := wd.RuntimeList()
-	require.Equal(t, 2, len(runtimes))
 	require.Contains(t, runtimes, "go")
 	require.Contains(t, runtimes, "gh")
 }

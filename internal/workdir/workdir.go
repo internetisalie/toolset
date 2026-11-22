@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/kazhuravlev/toolset/internal/fsh"
 	remotes2 "github.com/kazhuravlev/toolset/internal/workdir/remotes"
 	runtimes "github.com/kazhuravlev/toolset/internal/workdir/runtimes"
+	runtimedocker "github.com/kazhuravlev/toolset/internal/workdir/runtimes/runtime-docker"
 	"github.com/kazhuravlev/toolset/internal/workdir/structs"
 	"golang.org/x/sync/semaphore"
 )
@@ -178,7 +180,7 @@ func (c *Workdir) AddInclude(ctx context.Context, source string, tags []string) 
 	return count, nil
 }
 
-func (c *Workdir) Add(ctx context.Context, runtime, program string, alias optional.Val[string], tags []string, pin bool) (bool, string, error) {
+func (c *Workdir) Add(ctx context.Context, runtime, program string, alias optional.Val[string], tags []string, pin bool, docker optional.Val[structs.DockerConfig]) (bool, string, error) {
 	rt, err := c.runtimes.GetInstall(ctx, runtime)
 	if err != nil {
 		return false, "", fmt.Errorf("get runtime: %w", err)
@@ -194,6 +196,11 @@ func (c *Workdir) Add(ctx context.Context, runtime, program string, alias option
 		Module:  program,
 		Alias:   alias,
 		Tags:    tags,
+		Docker:  docker,
+	}
+
+	if err := validateTool(tool); err != nil {
+		return false, "", err
 	}
 
 	if pin {
@@ -216,7 +223,7 @@ func (c *Workdir) Add(ctx context.Context, runtime, program string, alias option
 }
 
 // Ensure will 'upsert' the tool. It removes current version of mentioned tool and install the specific one.
-func (c *Workdir) Ensure(ctx context.Context, runtime, program string, alias optional.Val[string], tags []string, pin bool) (string, error) {
+func (c *Workdir) Ensure(ctx context.Context, runtime, program string, alias optional.Val[string], tags []string, pin bool, docker optional.Val[structs.DockerConfig]) (string, error) {
 	rt, err := c.runtimes.GetInstall(ctx, runtime)
 	if err != nil {
 		return "", fmt.Errorf("get runtime: %w", err)
@@ -232,6 +239,11 @@ func (c *Workdir) Ensure(ctx context.Context, runtime, program string, alias opt
 		Module:  program,
 		Alias:   alias,
 		Tags:    tags,
+		Docker:  docker,
+	}
+
+	if err := validateTool(tool); err != nil {
+		return "", err
 	}
 
 	if pin {
@@ -327,7 +339,7 @@ func (c *Workdir) RunTool(ctx context.Context, str string, args ...string) error
 	}
 
 RunProgram:
-	if err := rt.Run(ctx, ts.Tool.Module, args...); err != nil {
+	if err := c.runWithRuntime(ctx, rt, ts.Tool, args); err != nil {
 		if errors.Is(err, structs.ErrToolNotInstalled) {
 			if autoInstallProgram {
 				if err := rt.Install(ctx, ts.Tool.Module, ts.Tool.Pin); err != nil {
@@ -346,6 +358,37 @@ RunProgram:
 		}
 
 		return fmt.Errorf("run tool: %w", err)
+	}
+
+	return nil
+}
+
+// runWithRuntime runs the tool. Runtimes that implement IToolRunner receive the whole tool definition.
+func (c *Workdir) runWithRuntime(ctx context.Context, rt runtimes.IRuntime, tool structs.Tool, args []string) error {
+	tr, ok := rt.(runtimes.IToolRunner)
+	if !ok {
+		return rt.Run(ctx, tool.Module, args...)
+	}
+
+	opts := runtimedocker.RunOptions{
+		ProjectRoot: c.locations.ProjectRootDir,
+		// Tools that are not in the local spec come from remotes/includes and are sandboxed harder.
+		Untrusted: !slices.ContainsFunc(c.spec.Tools, func(t structs.Tool) bool { return t.ID() == tool.ID() }),
+	}
+
+	return tr.RunTool(ctx, tool, opts, args...)
+}
+
+// validateTool checks the runtime-specific parts of a tool definition.
+func validateTool(tool structs.Tool) error {
+	isDocker := tool.RuntimeName() == "docker"
+
+	if tool.Docker.HasVal() && !isDocker {
+		return fmt.Errorf("docker settings are supported only by the docker runtime, got %q", tool.Runtime)
+	}
+
+	if isDocker && !tool.Alias.HasVal() {
+		return errors.New("docker tools require an alias: it is the name used by `toolset run`")
 	}
 
 	return nil
@@ -389,6 +432,11 @@ func (c *Workdir) Sync(ctx context.Context, maxWorkers int, tags []string) error
 			}
 
 			if alias, ok := tool.Alias.Get(); ok {
+				if mod.BinPath == "" {
+					// Nothing on disk to link to (e.g. docker images live in the daemon).
+					return
+				}
+
 				targetPath := filepath.Join(c.locations.CacheDir, alias)
 				if fsh.IsExists(c.fs, targetPath) {
 					if err := c.fs.Remove(targetPath); err != nil {
