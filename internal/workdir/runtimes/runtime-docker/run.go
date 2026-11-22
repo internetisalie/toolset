@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 
+	"golang.org/x/term"
+
 	"github.com/kazhuravlev/toolset/internal/workdir/structs"
 )
 
@@ -37,17 +39,12 @@ func currentHostEnv() hostEnv {
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
 
-	var tty bool
-	if st, err := os.Stdin.Stat(); err == nil {
-		tty = st.Mode()&os.ModeCharDevice != 0
-	}
-
 	return hostEnv{
 		Cwd:    cwd,
 		Home:   home,
 		UID:    os.Getuid(),
 		GID:    os.Getgid(),
-		TTY:    tty,
+		TTY:    term.IsTerminal(int(os.Stdin.Fd())), // not ModeCharDevice: /dev/null is one
 		Getenv: os.Getenv,
 	}
 }

@@ -130,7 +130,12 @@ func TestRuntime_GetPin(t *testing.T) {
 
 	digest := "sha256:" + strings.Repeat("a", 64)
 
-	f := &fakeCmd{outputs: map[string]string{"buildx imagetools inspect": digest}}
+	// Real output: the top-level digest comes first; per-platform manifests follow and must be ignored.
+	other := "sha256:" + strings.Repeat("e", 64)
+	out := "Name:      docker.io/library/b:v1\nMediaType: application/vnd.oci.image.index.v1+json\nDigest:    " + digest +
+		"\n           \nManifests: \n  Name:        docker.io/library/b:v1@" + other + "\n  Digest:      " + other + "\n"
+
+	f := &fakeCmd{outputs: map[string]string{"buildx imagetools inspect": out}}
 	pin, err := newTest(f, hostEnv{}).GetPin(context.Background(), "a/b@v1")
 	require.NoError(t, err)
 	require.Equal(t, digest, pin.Val().ImageDigest)

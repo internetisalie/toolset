@@ -25,6 +25,10 @@ const runtimeName = "docker"
 
 var digestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
+// digestLineRe finds the top-level "Digest:" line of `docker buildx imagetools inspect`.
+// The plain output is parsed because --format is not honored by every buildx build.
+var digestLineRe = regexp.MustCompile(`(?m)^Digest:\s+(sha256:[0-9a-f]{64})\s*$`)
+
 // commander abstracts the docker CLI so tests do not need a daemon.
 type commander interface {
 	// Output runs docker and returns trimmed stdout. Stderr is part of the returned error.
@@ -152,16 +156,17 @@ func (r *Runtime) GetPin(ctx context.Context, program string) (optional.Val[stru
 		return optional.Empty[structs.Pin](), fmt.Errorf("parse module (%s): %w", program, err)
 	}
 
-	out, err := r.cmd.Output(ctx, "buildx", "imagetools", "inspect", img.tagRef(), "--format", "{{.Manifest.Digest}}")
+	out, err := r.cmd.Output(ctx, "buildx", "imagetools", "inspect", img.tagRef())
 	if err != nil {
 		return optional.Empty[structs.Pin](), fmt.Errorf("resolve digest (%s): %w", img.tagRef(), err)
 	}
 
-	if !digestRe.MatchString(out) {
-		return optional.Empty[structs.Pin](), fmt.Errorf("unexpected digest for %s: %q", img.tagRef(), out)
+	m := digestLineRe.FindStringSubmatch(out)
+	if m == nil || !digestRe.MatchString(m[1]) {
+		return optional.Empty[structs.Pin](), fmt.Errorf("digest not found in imagetools output for %s", img.tagRef())
 	}
 
-	return optional.New(structs.Pin{ImageDigest: out}), nil
+	return optional.New(structs.Pin{ImageDigest: m[1]}), nil
 }
 
 // Install pulls the image. When pinned it pulls by digest (docker verifies the content against it)
