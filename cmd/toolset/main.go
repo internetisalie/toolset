@@ -28,6 +28,8 @@ const (
 	keyTags     = "tags"
 	keyUnused   = "unused"
 	keyPin      = "pin"
+	keyPrune    = "prune"
+	keyDir      = "dir"
 
 	keyDockerEntrypoint = "entrypoint"
 	keyDockerArg        = "arg"
@@ -81,6 +83,12 @@ func main() {
 	app := &cli.App{
 		Name:  "toolset",
 		Usage: "Manage local toolsets",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  keyDir,
+				Usage: "directory to look for the toolset spec from (default: the current directory). Put it before the command",
+			},
+		},
 		Commands: []*cli.Command{
 			{
 				Name:  "version",
@@ -249,6 +257,33 @@ Use --unused flag to find tools that have never been executed (helpful for clean
 				Action: withWorkdir(cmdList),
 			},
 			{
+				Name:  "link",
+				Usage: "make installed tools callable by name from a directory",
+				Description: `Create an entry for every installed tool in the given directory, so the tools can be
+called by name when that directory is on PATH (a CI bin dir, ~/bin, ...).
+
+	$ toolset link --prune ~/bin
+	$ toolset link .tools/bin
+
+Tools with a binary are symlinked (on Windows: a .cmd file that calls it). Tools without one, such
+as docker images, get a small script that calls 'toolset run' for this project, so it works from
+any directory.
+
+An existing file is replaced only if toolset made it. If anything else is in the way, nothing is
+changed. Tools that are not installed are an error: run 'toolset sync' first.
+
+--prune also removes entries this project made earlier for tools that are no longer in the spec.
+Flags must come before the directory.`,
+				Action: withWorkdir(cmdLink),
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  keyPrune,
+						Usage: "remove entries made earlier by this project for tools that are no longer in the spec",
+					},
+				},
+				Args: true,
+			},
+			{
 				Name:  "which",
 				Usage: "show path to the actual binary",
 				Description: `Display the full filesystem path to the installed tool binary.
@@ -352,6 +387,10 @@ func cmdInit(c *cli.Context) error {
 	fs := fsh.NewRealFS()
 
 	targetDir := c.Args().First()
+	if targetDir == "" && c.IsSet(keyDir) {
+		targetDir = c.String(keyDir)
+	}
+
 	if targetDir == "" {
 		targetDir = "."
 	}
@@ -387,7 +426,12 @@ func withWorkdir(fn func(c *cli.Context, wd *workdir.Workdir) error) func(c *cli
 	return func(c *cli.Context) error {
 		fs := fsh.NewRealFS()
 
-		wd, err := workdir.New(c.Context, fs, "./")
+		dir := c.String(keyDir)
+		if dir == "" {
+			dir = "./"
+		}
+
+		wd, err := workdir.New(c.Context, fs, dir)
 		if err != nil {
 			return fmt.Errorf("new workdir: %w", err)
 		}
@@ -708,6 +752,29 @@ func cmdWhich(c *cli.Context, wd *workdir.Workdir) error {
 		}
 
 		fmt.Println(ts.Module.BinPath)
+	}
+
+	return nil
+}
+
+func cmdLink(c *cli.Context, wd *workdir.Workdir) error {
+	if c.NArg() != 1 {
+		return fmt.Errorf("exactly one directory is required (flags go before it)")
+	}
+
+	results, err := wd.Link(c.Context, c.Args().First(), c.Bool(keyPrune))
+
+	for _, res := range results {
+		switch res.Detail {
+		case "":
+			fmt.Println(res.Op+":", res.Name)
+		default:
+			fmt.Println(res.Op+":", res.Name, "("+res.Detail+")")
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("link: %w", err)
 	}
 
 	return nil

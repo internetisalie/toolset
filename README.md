@@ -227,6 +227,38 @@ This command returns an abs path to goimports like that:
 /Users/username/.cache/toolset/go1.23/.goimports___v0.21.0/goimports
 ```
 
+### Call tools by name
+
+Installed tools live in the cache, not on `PATH`. `toolset link` puts them into a directory you choose, so editors,
+scripts and other programs can call them by name:
+
+```shell
+toolset sync
+toolset link ~/.local/bin
+golangci-lint --version
+```
+
+* A tool with a binary (`go`, `gh`) becomes a **symlink** to it.
+* A tool without one (`docker`) becomes a small **shell shim** that runs `toolset run <alias>` for the project.
+* The name is the tool's alias, or the name of its binary.
+* Shims are pinned to the project, so they work from any directory and always use this project's version.
+* Every tool must be installed first: run `toolset sync`. Otherwise `link` stops and lists the ones that are missing.
+* `link` is safe to repeat. It never replaces a file it did not create: if any name is taken by something else,
+  it reports all of them and changes nothing. It only replaces its own symlinks (into the toolset cache) and shims.
+* `--prune` removes entries that this project created earlier for tools you have since removed. Entries made by other
+  projects, or by you, are left alone. What each project made is remembered in `.toolset-link.json` in that directory.
+
+On Windows `link` writes `.cmd` shims for every tool, because creating symlinks needs a privilege most users do not
+have. Put the directory on `PATH` and call `golangci-lint` as usual. `link` refuses if a `name.exe`, `name.com` or
+`name.bat` is already there, since `cmd` would run it instead of the shim.
+
+Because the project is chosen by the shims, not by the current directory, you can also point any command at a project
+with the global `--dir` option. It goes **before** the command:
+
+```shell
+toolset --dir ~/src/my-project run golangci-lint run ./...
+```
+
 ### Remove installed tool
 
 You can use `toolset remove` in very similar order like `toolset add` or `toolset run`. This operation will remove
