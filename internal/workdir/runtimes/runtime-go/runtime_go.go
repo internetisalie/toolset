@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/kazhuravlev/optional"
@@ -30,6 +31,7 @@ type Runtime struct {
 	isGlobal   bool
 	goVersion  string // ex: 1.23
 	binToolDir string
+	goos       string // the OS the installed programs run on; decides the .exe suffix
 	goCacheDir optional.Val[string]
 	httpClient *http.Client   // injectable for tests; defaults to http.DefaultClient
 	resolver   moduleResolver // injectable for tests; defaults to productionModuleResolver
@@ -47,6 +49,7 @@ func New(fs fsh.FS, binToolDir, goBin, goVer string, goCache optional.Val[string
 		goBin:      goBin,
 		goVersion:  goVer,
 		binToolDir: binToolDir,
+		goos:       runtime.GOOS,
 		goCacheDir: goCache,
 		httpClient: http.DefaultClient,
 	}
@@ -78,7 +81,7 @@ func (r *Runtime) GetModule(ctx context.Context, module string) (*structs.Module
 	}
 
 	programDir := filepath.Join(r.binToolDir, fmt.Sprintf("go%s/%s___%s", r.goVersion, mod.Program, mod.Mod.Version()))
-	programBinary := filepath.Join(programDir, mod.Program)
+	programBinary := filepath.Join(programDir, fsh.ExeName(r.goos, mod.Program))
 
 	return &structs.ModuleInfo{
 		Name:        mod.Program,
