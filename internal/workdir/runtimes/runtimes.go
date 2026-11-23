@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kazhuravlev/optional"
+	runtimedocker "github.com/kazhuravlev/toolset/internal/workdir/runtimes/runtime-docker"
 	runtimegh "github.com/kazhuravlev/toolset/internal/workdir/runtimes/runtime-github-release"
 	runtimego "github.com/kazhuravlev/toolset/internal/workdir/runtimes/runtime-go"
 
@@ -19,6 +20,7 @@ import (
 const (
 	runtimeGo     = "go"
 	runtimeGithub = "gh"
+	runtimeDocker = "docker"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -40,6 +42,12 @@ type IRuntime interface {
 	GetLatest(ctx context.Context, module string) (string, bool, error)
 	Remove(ctx context.Context, tool structs.Tool) error
 	Version() string
+}
+
+// IToolRunner is implemented by runtimes that need the whole tool definition (not only the module string)
+// to run it, e.g. docker, which reads per-tool container settings.
+type IToolRunner interface {
+	RunTool(ctx context.Context, tool structs.Tool, opts runtimedocker.RunOptions, args ...string) error
 }
 
 type Runtimes struct {
@@ -103,6 +111,8 @@ func (r *Runtimes) EnsureInstalled(ctx context.Context, runtime string) (string,
 		return runtimeGo + "@" + ver, nil
 	case runtimeGithub:
 		return runtimeGithub, nil
+	case runtimeDocker:
+		return "", errors.New("docker runtime is not available: docker binary not found in PATH")
 	}
 }
 
@@ -128,12 +138,21 @@ func (r *Runtimes) Discover(ctx context.Context) error {
 		return fmt.Errorf("discovering github runtimes: %w", err)
 	}
 
-	r.impls = make(map[string]IRuntime, len(goRuntimes)+len(ghRuntimes))
+	dockerRuntimes, err := runtimedocker.Discover(ctx)
+	if err != nil {
+		return fmt.Errorf("discovering docker runtimes: %w", err)
+	}
+
+	r.impls = make(map[string]IRuntime, len(goRuntimes)+len(ghRuntimes)+len(dockerRuntimes))
 	for _, rt := range goRuntimes {
 		r.impls[rt.Version()] = rt
 	}
 
 	for _, rt := range ghRuntimes {
+		r.impls[rt.Version()] = rt
+	}
+
+	for _, rt := range dockerRuntimes {
 		r.impls[rt.Version()] = rt
 	}
 

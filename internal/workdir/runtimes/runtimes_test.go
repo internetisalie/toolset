@@ -2,6 +2,7 @@ package runtimes_test
 
 import (
 	"context"
+	"os/exec"
 	"runtime"
 	"testing"
 
@@ -10,6 +11,15 @@ import (
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
 )
+
+// withDocker prepends "docker" to the (sorted) expected list when the docker binary is on PATH.
+func withDocker(names ...string) []string {
+	if _, err := exec.LookPath("docker"); err == nil {
+		return append([]string{"docker"}, names...)
+	}
+
+	return names
+}
 
 func TestRuntimes(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -32,7 +42,7 @@ func TestRuntimes(t *testing.T) {
 	require.Empty(t, res)
 
 	require.NoError(t, rt.Discover(ctx))
-	require.Equal(t, []string{"gh", "go"}, rt.List())
+	require.Equal(t, withDocker("gh", "go"), rt.List())
 
 	res, err = rt.Get("go")
 	require.NoError(t, err)
@@ -46,5 +56,5 @@ func TestRuntimes(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, res)
 
-	require.Equal(t, []string{"gh", "go", "go@1.22.10"}, rt.List())
+	require.Equal(t, withDocker("gh", "go", "go@1.22.10"), rt.List())
 }

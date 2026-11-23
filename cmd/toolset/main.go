@@ -28,7 +28,42 @@ const (
 	keyTags     = "tags"
 	keyUnused   = "unused"
 	keyPin      = "pin"
+
+	keyDockerEntrypoint = "entrypoint"
+	keyDockerArg        = "arg"
+	keyDockerVolume     = "volume"
+	keyDockerWorkdir    = "workdir"
+	keyDockerNetwork    = "network"
+	keyDockerEnv        = "env"
 )
+
+// flagsDocker configure the docker runtime. They are ignored by other runtimes (and rejected when set).
+var flagsDocker = []cli.Flag{
+	&cli.StringFlag{Name: keyDockerEntrypoint, Usage: "docker: override the image entrypoint"},
+	&cli.StringSliceFlag{Name: keyDockerArg, Usage: "docker: fixed argument placed before user arguments (repeatable)"},
+	&cli.StringSliceFlag{Name: keyDockerVolume, Usage: "docker: volume src:dst[:ro|rw]; $PROJECT, $PWD, $HOME are expanded at run time (repeatable). Default $PROJECT:/work"},
+	&cli.StringFlag{Name: keyDockerWorkdir, Usage: "docker: working directory inside the container"},
+	&cli.StringFlag{Name: keyDockerNetwork, Usage: "docker: none (default), bridge, host or a network name"},
+	&cli.StringSliceFlag{Name: keyDockerEnv, Usage: "docker: host env variable name to pass through (repeatable)"},
+}
+
+func dockerConfigFromFlags(c *cli.Context) optional.Val[structs.DockerConfig] {
+	cfg := structs.DockerConfig{
+		Entrypoint: c.String(keyDockerEntrypoint),
+		Args:       c.StringSlice(keyDockerArg),
+		Volumes:    c.StringSlice(keyDockerVolume),
+		Workdir:    c.String(keyDockerWorkdir),
+		Network:    c.String(keyDockerNetwork),
+		Env:        c.StringSlice(keyDockerEnv),
+	}
+
+	if cfg.Entrypoint == "" && len(cfg.Args) == 0 && len(cfg.Volumes) == 0 &&
+		cfg.Workdir == "" && cfg.Network == "" && len(cfg.Env) == 0 {
+		return optional.Empty[structs.DockerConfig]()
+	}
+
+	return optional.New(cfg)
+}
 
 var flagParallel = &cli.IntFlag{
 	Name:    keyParallel,
@@ -299,6 +334,12 @@ Shows runtime names and versions available for use.
 		},
 	}
 
+	for _, cmd := range app.Commands {
+		if cmd.Name == "add" || cmd.Name == "ensure" {
+			cmd.Flags = append(cmd.Flags, flagsDocker...)
+		}
+	}
+
 	if err := app.Run(os.Args); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -401,7 +442,7 @@ func cmdAdd(c *cli.Context, wd *workdir.Workdir) error {
 
 	pin := c.Bool(keyPin)
 
-	wasAdded, mod, err := wd.Add(ctx, runtime, module, alias, tags, pin)
+	wasAdded, mod, err := wd.Add(ctx, runtime, module, alias, tags, pin, dockerConfigFromFlags(c))
 	if err != nil {
 		return fmt.Errorf("add module: %w", err)
 	}
@@ -660,6 +701,12 @@ func cmdWhich(c *cli.Context, wd *workdir.Workdir) error {
 			return fmt.Errorf("find tool: %w", err)
 		}
 
+		if ts.Module.BinPath == "" {
+			// No binary on disk (docker): show what is run instead.
+			fmt.Println(ts.Tool.Runtime + ":" + ts.Tool.Module)
+			continue
+		}
+
 		fmt.Println(ts.Module.BinPath)
 	}
 
@@ -758,7 +805,7 @@ func cmdEnsureModuleVersion(c *cli.Context, wd *workdir.Workdir) error {
 
 	pin := c.Bool(keyPin)
 
-	mod, err := wd.Ensure(ctx, runtime, module, alias, tags, pin)
+	mod, err := wd.Ensure(ctx, runtime, module, alias, tags, pin, dockerConfigFromFlags(c))
 	if err != nil {
 		return fmt.Errorf("ensure module: %w", err)
 	}
