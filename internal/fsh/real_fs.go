@@ -2,10 +2,14 @@ package fsh
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -106,7 +110,12 @@ func (r *RealFs) Open(name string) (afero.File, error) {
 }
 
 func (r *RealFs) RLock(ctx context.Context, filename string) (func(), error) {
-	fileLock := flock.New(filename)
+	lockFile, err := lockPath(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	fileLock := flock.New(lockFile)
 
 	locked, err := fileLock.TryRLockContext(ctx, time.Second)
 	if err != nil {
@@ -126,7 +135,12 @@ func (r *RealFs) RLock(ctx context.Context, filename string) (func(), error) {
 }
 
 func (r *RealFs) Lock(ctx context.Context, filename string) (func(), error) {
-	fileLock := flock.New(filename)
+	lockFile, err := lockPath(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	fileLock := flock.New(lockFile)
 
 	locked, err := fileLock.TryLockContext(ctx, time.Second)
 	if err != nil {
@@ -143,4 +157,38 @@ func (r *RealFs) Lock(ctx context.Context, filename string) (func(), error) {
 			panic(err)
 		}
 	}, nil
+}
+
+// lockPath returns the file that is locked on behalf of filename.
+//
+// The data file itself must not be locked: on Windows flock is a mandatory lock, so the holder
+// could not write the file through another handle. A file next to the data file would show up in
+// users' repositories, so the lock files live in the user cache dir, named after the data file's path.
+func lockPath(filename string) (string, error) {
+	abs, err := filepath.Abs(filename)
+	if err != nil {
+		return "", fmt.Errorf("abs path (%s): %w", filename, err)
+	}
+
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+
+	if runtime.GOOS == "windows" {
+		abs = strings.ToLower(abs) // paths are case-insensitive there
+	}
+
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+
+	dir = filepath.Join(dir, "toolset-locks")
+	if err := os.MkdirAll(dir, DefaultDirPerm); err != nil {
+		return "", fmt.Errorf("create lock dir: %w", err)
+	}
+
+	sum := sha256.Sum256([]byte(abs))
+
+	return filepath.Join(dir, hex.EncodeToString(sum[:16])+".lock"), nil
 }
