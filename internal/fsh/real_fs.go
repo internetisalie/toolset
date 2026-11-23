@@ -46,6 +46,14 @@ func (r *RealFs) Stat(name string) (os.FileInfo, error) {
 	return r.fs.Stat(name)
 }
 
+func (r *RealFs) LstatIfPossible(name string) (os.FileInfo, bool, error) {
+	return r.fs.LstatIfPossible(name)
+}
+
+func (r *RealFs) ReadlinkIfPossible(name string) (string, error) {
+	return r.fs.ReadlinkIfPossible(name)
+}
+
 func (r *RealFs) SymlinkIfPossible(oldname, newname string) error {
 	return r.fs.SymlinkIfPossible(oldname, newname)
 }
