@@ -104,6 +104,8 @@ func TestReadOrCreateJson(t *testing.T) {
 }
 
 func TestLocks(t *testing.T) {
+	isolateLockDir(t)
+
 	ctx := context.Background()
 	fs := fsh.NewRealFS()
 
@@ -157,6 +159,83 @@ func TestLocks(t *testing.T) {
 		defer cancel()
 
 		unlock2, err := fs.Lock(lockCtx, filename)
+		require.NoError(t, err)
+		unlock2()
+	})
+}
+
+// isolateLockDir keeps the lock files of a test out of the real user cache dir.
+func isolateLockDir(t *testing.T) {
+	t.Helper()
+
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("LocalAppData", cache)
+	t.Setenv("HOME", cache)
+}
+
+// Locks must not be taken on the data file: on Windows a locked file cannot be written through
+// another handle, and a lock file next to it would litter the user's repository.
+func TestLocks_DoNotTouchDataFile(t *testing.T) {
+	isolateLockDir(t)
+
+	ctx := context.Background()
+	fs := fsh.NewRealFS()
+	dir := t.TempDir()
+	data := filepath.Join(dir, ".toolset.json")
+
+	t.Run("lock_does_not_create_the_data_file", func(t *testing.T) {
+		unlock, err := fs.Lock(ctx, data)
+		require.NoError(t, err)
+		defer unlock()
+
+		require.NoFileExists(t, data)
+
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		require.Empty(t, entries, "nothing may appear next to the data file")
+	})
+
+	t.Run("data_file_is_writable_while_locked", func(t *testing.T) {
+		unlock, err := fs.Lock(ctx, data)
+		require.NoError(t, err)
+		defer unlock()
+
+		f, err := fs.OpenFile(data, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		require.NoError(t, err)
+		_, err = f.WriteString("{}")
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+	})
+
+	t.Run("write_and_read_json_round_trip", func(t *testing.T) {
+		path := filepath.Join(dir, "sample.json")
+
+		require.NoError(t, fsh.WriteJson(ctx, fs, SampleJson{Field: "v"}, path))
+
+		res, err := fsh.ReadJson[SampleJson](ctx, fs, path)
+		require.NoError(t, err)
+		require.Equal(t, SampleJson{Field: "v"}, *res)
+	})
+
+	t.Run("same_file_different_spelling_excludes", func(t *testing.T) {
+		unlock, err := fs.Lock(ctx, data)
+		require.NoError(t, err)
+		defer unlock()
+
+		cancelCtx, cancel := context.WithCancel(ctx)
+		cancel()
+
+		_, err = fs.Lock(cancelCtx, filepath.Join(dir, ".", "sub", "..", ".toolset.json"))
+		require.Error(t, err, "a different spelling of the same path must hit the same lock")
+	})
+
+	t.Run("different_files_do_not_block_each_other", func(t *testing.T) {
+		unlock, err := fs.Lock(ctx, data)
+		require.NoError(t, err)
+		defer unlock()
+
+		unlock2, err := fs.Lock(ctx, filepath.Join(dir, ".toolset.lock.json"))
 		require.NoError(t, err)
 		unlock2()
 	})
