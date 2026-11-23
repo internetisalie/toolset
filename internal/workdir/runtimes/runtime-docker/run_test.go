@@ -69,7 +69,7 @@ func TestBuildRunArgs_Full(t *testing.T) {
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
 		"--network", "bridge",
 		"-v", env.Project + ":/work",
-		"-v", env.Home + "/cache:/cache:ro",
+		"-v", filepath.Join(env.Home, "cache") + ":/cache:ro",
 		"-v", "named-cache:/n",
 		"-w", "/work/sub",
 		"-e", "CI",
@@ -162,9 +162,11 @@ func TestBuildRunArgs_RejectsRootWhenHomeIsRoot(t *testing.T) {
 	t.Parallel()
 
 	env, _ := testEnv(t)
-	env.Home = "/"
+	// The filesystem root of the test dir: "/" on Unix, "C:\\" on Windows.
+	fsRoot := filepath.VolumeName(env.Project) + string(filepath.Separator)
+	env.Home = fsRoot
 
-	_, err := buildRunArgs(structs.DockerConfig{Volumes: []string{"/:/host"}}, "img:1", env, nil)
+	_, err := buildRunArgs(structs.DockerConfig{Volumes: []string{fsRoot + ":/host"}}, "img:1", env, nil)
 	require.ErrorContains(t, err, "not allowed")
 }
 
@@ -225,5 +227,46 @@ func TestValidateConfig(t *testing.T) {
 		"rw":           {Volumes: []string{"$PROJECT:/w:rw"}},
 	} {
 		require.Error(t, ValidateConfig(cfg, true), name)
+	}
+}
+
+func TestParseVolumeFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		spec    string
+		windows bool
+		want    mount
+		wantErr bool
+	}{
+		{name: "unix host path", spec: "/a/b:/c:ro", want: mount{src: "/a/b", dst: "/c", opts: "ro"}},
+		{name: "variable", spec: "$PROJECT:/work", want: mount{src: "$PROJECT", dst: "/work"}},
+		{name: "named volume", spec: "cache:/c", want: mount{src: "cache", dst: "/c", named: true}},
+		// On Linux "c:/x" is a named volume "c" mounted at /x; it is not a drive.
+		{name: "single letter volume on unix", spec: "c:/x", want: mount{src: "c", dst: "/x", named: true}},
+		{name: "drive on windows", spec: `C:\proj:/work`, windows: true, want: mount{src: `C:\proj`, dst: "/work"}},
+		{name: "drive with slashes and option", spec: "d:/proj/x:/work:ro", windows: true, want: mount{src: "d:/proj/x", dst: "/work", opts: "ro"}},
+		{name: "drive root", spec: `C:\:/host`, windows: true, want: mount{src: `C:\`, dst: "/host"}},
+		{name: "variable on windows", spec: "$HOME/x:/c", windows: true, want: mount{src: "$HOME/x", dst: "/c"}},
+		{name: "named volume on windows", spec: "cache:/c", windows: true, want: mount{src: "cache", dst: "/c", named: true}},
+		{name: "windows container path", spec: `C:\proj:D:\work`, windows: true, wantErr: true},
+		{name: "too many fields", spec: "/a:/b:ro:x", wantErr: true},
+		{name: "drive without dst", spec: `C:\proj`, windows: true, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseVolumeFor(tt.spec, tt.windows)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
 	}
 }

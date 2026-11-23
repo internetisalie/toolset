@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"golang.org/x/term"
@@ -193,10 +194,42 @@ func (m mount) String() string {
 
 // parseVolume splits src:dst[:opts] without expanding variables or touching the filesystem.
 func parseVolume(spec string) (mount, error) {
-	parts := strings.Split(spec, ":")
+	return parseVolumeFor(spec, runtime.GOOS == "windows")
+}
+
+// hasDriveLetter reports whether s starts with a Windows drive ("C:\" or "C:/").
+func hasDriveLetter(s string) bool {
+	if len(s) < 3 || s[1] != ':' || (s[2] != '\\' && s[2] != '/') {
+		return false
+	}
+
+	c := s[0] | 0x20 // to lower case
+	return c >= 'a' && c <= 'z'
+}
+
+// isHostSource reports whether src is (or expands to) a host path, as opposed to a named volume.
+func isHostSource(src string, windows bool) bool {
+	if strings.HasPrefix(src, "/") || strings.HasPrefix(src, "$") {
+		return true
+	}
+
+	// On Linux "c:/x" is a named volume "c" mounted at /x, so drives are a Windows-only notion.
+	return windows && (hasDriveLetter(src) || strings.HasPrefix(src, `\`))
+}
+
+func parseVolumeFor(spec string, windows bool) (mount, error) {
+	// The colon of a drive letter is not a field separator.
+	drive, rest := "", spec
+	if windows && hasDriveLetter(spec) {
+		drive, rest = spec[:2], spec[2:]
+	}
+
+	parts := strings.Split(rest, ":")
 	if len(parts) < 2 || len(parts) > 3 {
 		return mount{}, errors.New("expected src:dst[:ro|rw]")
 	}
+
+	parts[0] = drive + parts[0]
 
 	m := mount{src: parts[0], dst: parts[1]}
 	if len(parts) == 3 {
@@ -206,12 +239,12 @@ func parseVolume(spec string) (mount, error) {
 		}
 	}
 
+	// The container side is always a Linux path.
 	if !path.IsAbs(m.dst) {
 		return mount{}, errors.New("container path must be absolute")
 	}
 
-	// A source that is (or expands to) an absolute path is a host path; anything else is a named volume.
-	if !strings.HasPrefix(m.src, "/") && !strings.HasPrefix(m.src, "$") {
+	if !isHostSource(m.src, windows) {
 		if !netNameRe.MatchString(m.src) {
 			return mount{}, fmt.Errorf("invalid volume source %q", m.src)
 		}
@@ -264,7 +297,7 @@ func resolveVolume(spec string, env hostEnv, project string) (mount, error) {
 	}
 
 	m.src = expandVars(m.src, env)
-	if !strings.HasPrefix(m.src, "/") {
+	if !filepath.IsAbs(m.src) {
 		return mount{}, fmt.Errorf("source %q does not expand to an absolute path", m.src)
 	}
 
@@ -280,7 +313,8 @@ func resolveVolume(spec string, env hostEnv, project string) (mount, error) {
 		return mount{}, fmt.Errorf("resolve source: %w", err)
 	}
 
-	if resolved == "/" || filepath.Base(resolved) == "docker.sock" {
+	// A volume root ("/" or `C:\`) would expose the whole filesystem.
+	if filepath.Dir(resolved) == resolved || filepath.Base(resolved) == "docker.sock" {
 		return mount{}, fmt.Errorf("mounting %s is not allowed", resolved)
 	}
 
