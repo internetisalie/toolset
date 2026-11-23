@@ -82,3 +82,23 @@ func TestExt(t *testing.T) {
 		})
 	}
 }
+
+func TestExeName(t *testing.T) {
+	tests := []struct {
+		goos, name, exp string
+	}{
+		{"windows", "stringer", "stringer.exe"},
+		{"windows", "stringer.exe", "stringer.exe"},
+		{"windows", "Stringer.EXE", "Stringer.EXE"},
+		{"windows", "tool.v2", "tool.v2.exe"},
+		{"linux", "stringer", "stringer"},
+		{"darwin", "stringer", "stringer"},
+		{"linux", "tool.exe", "tool.exe"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.goos+"/"+tt.name, func(t *testing.T) {
+			require.Equal(t, tt.exp, fsh.ExeName(tt.goos, tt.name))
+		})
+	}
+}

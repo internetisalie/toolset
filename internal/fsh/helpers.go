@@ -168,6 +168,16 @@ func Ext(filename string) string {
 	return "." + ext
 }
 
+// ExeName is the file name of the program called name on goos: Windows runs only files with an
+// executable extension, so the name gets ".exe" there.
+func ExeName(goos, name string) string {
+	if goos != "windows" || strings.EqualFold(filepath.Ext(name), ".exe") {
+		return name
+	}
+
+	return name + ".exe"
+}
+
 // SetExecutable mark file as executable.
 func SetExecutable(fSys FS, path string) error {
 	info, err := fSys.Stat(path)

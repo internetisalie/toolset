@@ -70,7 +70,7 @@ func (r *Runtime) GetModule(ctx context.Context, module string) (*structs.Module
 	}
 
 	programDir := filepath.Join(r.binToolDir, fmt.Sprintf("gh/%s", mod.Mod.S()))
-	programBinary := filepath.Join(programDir, mod.Program)
+	programBinary := filepath.Join(programDir, fsh.ExeName(r.os, mod.Program))
 
 	return &structs.ModuleInfo{
 		Name:        mod.Program,
@@ -149,7 +149,7 @@ func (r *Runtime) Install(ctx context.Context, program string, pin optional.Val[
 	}
 
 	// Find the binary in the extracted archive
-	binFile, err := r.findBinary(tmpDirUnarchived, repo)
+	binFile, err := r.findBinary(tmpDirUnarchived, fsh.ExeName(r.os, repo))
 	if err != nil {
 		return fmt.Errorf("find binary in extracted archive: %w", err)
 	}
