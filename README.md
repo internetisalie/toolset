@@ -366,9 +366,10 @@ local `.toolset.json`. Untrusted tools get a stricter profile:
 **Pinning:** `--pin` stores the image manifest digest. Pinned tools are pulled and run by digest.
 
 **Windows:** volume sources may be drive paths (`C:\src:/work:ro`); the container side is always a Linux
-path, so Docker Desktop must be using Linux containers. No `--user` is passed there. The runtime itself
-was exercised against Docker Desktop on Windows 11, but toolset's own spec writes do not work on Windows
-yet (file locking), so the whole `add`/`sync`/`run` flow is not usable there.
+path, so Docker Desktop must be using Linux containers. No `--user` is passed there. The whole
+`add`/`sync`/`run` flow was exercised against Docker Desktop on Windows 11, together with the file-locking
+fix in [#5](https://github.com/internetisalie/toolset/pull/5). Without that fix, toolset's own spec writes
+fail on Windows.
 
 **Limitations:** `toolset upgrade` does not find newer tags (the docker CLI cannot list them) — use
 `toolset ensure` with the new tag. There is no binary on disk, so `which` prints `docker:<module>`.
